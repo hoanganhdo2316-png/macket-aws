@@ -1,0 +1,1 @@
+"""Macket Facebook group collector."""

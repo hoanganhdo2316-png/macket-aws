@@ -1,0 +1,9 @@
+services:
+  collector:
+    build: .
+    image: macket-apify-collector:1.0
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: "no"
