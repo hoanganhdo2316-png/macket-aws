@@ -1,0 +1,65 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend: &backend
+  image: ${MACKET_BACKEND_IMAGE:-macket-backend:local}
+  env_file: ${MACKET_RUNTIME_ENV:?Set MACKET_RUNTIME_ENV to the external backend env file}
+  networks: [app]
+  stop_grace_period: 60s
+  security_opt: [no-new-privileges:true]
+  logging: *logging
+
+x-worker: &worker
+  <<: *backend
+  profiles: [jobs]
+  restart: "no"
+  command: ["python", "-c", "raise SystemExit('Supply the verified worker command explicitly')"]
+
+services:
+  backend-api:
+    <<: *backend
+    build: ./backend
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  frontend:
+    image: ${MACKET_FRONTEND_IMAGE:-macket-frontend:local}
+    build: ./frontend
+    networks: [app]
+    ports:
+      - "127.0.0.1:${MACKET_FRONTEND_PORT:-8080}:80"
+    restart: unless-stopped
+    logging: *logging
+    mem_limit: 64m
+    cpus: 0.25
+    depends_on:
+      backend-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  classification-worker:
+    <<: *worker
+
+  extraction-worker:
+    <<: *worker
+
+  media-worker:
+    <<: *worker
+
+networks:
+  app:
+    driver: bridge

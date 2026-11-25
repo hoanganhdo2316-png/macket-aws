@@ -1,0 +1,41 @@
+# Image-only EC2 web deployment. The canary defaults to read-only PostgreSQL.
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+
+services:
+  backend-api:
+    image: ${MACKET_BACKEND_IMAGE:?Set the approved backend ECR digest reference}
+    platform: linux/amd64
+    env_file: ${MACKET_RUNTIME_ENV:?Set the external backend environment file}
+    environment:
+      PGOPTIONS: "-c default_transaction_read_only=${MACKET_DB_READ_ONLY:-on}"
+      AWS_REGION: ap-southeast-1
+      AWS_DEFAULT_REGION: ap-southeast-1
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 1.0
+    stop_grace_period: 60s
+    restart: ${MACKET_WEB_RESTART_POLICY:-no}
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    image: ${MACKET_FRONTEND_IMAGE:?Set the approved frontend ECR digest reference}
+    platform: linux/amd64
+    ports: ["127.0.0.1:8080:80"]
+    mem_limit: 64m
+    cpus: 0.25
+    restart: ${MACKET_WEB_RESTART_POLICY:-no}
+    logging: *logging
+    depends_on:
+      backend-api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

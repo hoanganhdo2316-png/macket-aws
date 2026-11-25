@@ -1,0 +1,6 @@
+**
+!*.py
+!requirements.txt
+!stage2_extraction_prompt.txt
+test*.py
+patch_*.py

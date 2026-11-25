@@ -1,0 +1,47 @@
+# Disposable, isolated PostgreSQL. This project has no production env or published ports.
+services:
+  staging-db:
+    image: postgres:18.3-bookworm
+    environment:
+      POSTGRES_DB: macket_staging
+      POSTGRES_USER: staging
+      POSTGRES_PASSWORD: local-staging-fixture
+    tmpfs: [/var/lib/postgresql]
+    volumes:
+      - ./staging_schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    entrypoint: [bash, -ec]
+    command:
+      - |
+        install -d -o postgres -g postgres -m 0700 /tmp/staging-tls
+        gosu postgres openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+          -subj /CN=staging-db -keyout /tmp/staging-tls/server.key \
+          -out /tmp/staging-tls/server.crt >/dev/null 2>&1
+        chmod 0600 /tmp/staging-tls/server.key
+        exec docker-entrypoint.sh postgres -c ssl=on \
+          -c ssl_cert_file=/tmp/staging-tls/server.crt -c ssl_key_file=/tmp/staging-tls/server.key
+    healthcheck:
+      test: [CMD, pg_isready, -h, 127.0.0.1, -U, staging, -d, macket_staging]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+  backend-api:
+    image: macket-backend:0.1.1-ec2-parity
+    env_file: container.env.example
+    environment:
+      DB_HOST: staging-db
+      DB_PORT: "5432"
+      DB_USER: staging
+      DB_PASSWORD: local-staging-fixture
+      DB_NAME: macket_staging
+      PGOPTIONS: "-c default_transaction_read_only=off -c statement_timeout=10000"
+      COLLECTOR_CONFIG_TOKEN: local-collector-fixture
+      CREDENTIALS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      APIFY_TOKEN: local-apify-fixture
+    depends_on:
+      staging-db: {condition: service_healthy}
+  frontend:
+    image: macket-frontend:0.1.1-ec2-parity
+    depends_on: [backend-api]
+networks:
+  default:
+    internal: true
