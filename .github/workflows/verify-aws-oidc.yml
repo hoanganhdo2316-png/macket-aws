@@ -1,0 +1,52 @@
+name: Verify AWS OIDC (STS only)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    name: Verify ${{ matrix.environment }} role
+    environment: ${{ matrix.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: ecr-publish
+            role_variable: MACKET_ECR_PUBLISH_ROLE_ARN
+            role_name: MacketGitHubECRPublishRole
+          - environment: production
+            role_variable: MACKET_CD_ROLE_ARN
+            role_name: MacketGitHubDeployRole
+    env:
+      AWS_ACCOUNT: '393840684011'
+      ROLE_ARN: ${{ vars[matrix.role_variable] }}
+      ROLE_NAME: ${{ matrix.role_name }}
+      SESSION_NAME: macket-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Verify configured role ARN
+        shell: bash
+        run: test "$ROLE_ARN" = "arn:aws:iam::$AWS_ACCOUNT:role/$ROLE_NAME"
+      - uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6
+        with:
+          aws-region: ap-southeast-1
+          allowed-account-ids: '393840684011'
+          role-to-assume: ${{ env.ROLE_ARN }}
+          role-session-name: ${{ env.SESSION_NAME }}
+          role-duration-seconds: 900
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:GetCallerIdentity","Resource":"*"}]}
+      - name: Verify STS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          read -r account arn <<< "$(aws sts get-caller-identity --query '[Account,Arn]' --output text)"
+          test "$account" = "$AWS_ACCOUNT"
+          test "$arn" = "arn:aws:sts::$AWS_ACCOUNT:assumed-role/$ROLE_NAME/$SESSION_NAME"
+          printf 'PASS Account=%s Arn=%s\n' "$account" "$arn"
