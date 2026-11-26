@@ -6,6 +6,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from apify_run_ingestion import ingest_run
+from scan_routes import complete_scan_from_ingestion
 
 router = APIRouter(prefix="/api/webhooks", tags=["Apify Webhook"])
 
@@ -49,7 +50,11 @@ def register_apify_webhook_routes(app, engine):
             raise HTTPException(422, "Missing Apify Run ID")
 
         try:
-            return ingest_run(engine, payload.resource.id)
+            result = ingest_run(engine, payload.resource.id)
+            complete_scan_from_ingestion(
+                engine, payload.resource.id, result["status"] in ("INGESTED", "ALREADY_INGESTED"),
+            )
+            return result
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 

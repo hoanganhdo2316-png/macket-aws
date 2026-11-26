@@ -114,13 +114,14 @@ def main_test():
 
         assert run([item(101), item(102), item(103), item(104)], lambda: webhook("fixture-webhook"))["inserted_posts"] == 4
         assert webhook("fixture-webhook")["status"] == "ALREADY_INGESTED"
-        run([item(999), {}], lambda: webhook("fixture-rollback", 409))
-        assert one("SELECT count(*) FROM posts WHERE source_post_id='999'") == 0
-        assert one("SELECT count(*) FROM crawl_runs WHERE apify_run_id='fixture-rollback'") == 0
+        skipped = run([item(999), {}], lambda: webhook("fixture-rollback"))
+        assert (skipped["inserted_posts"], skipped["skipped_posts"]) == (1, 1)
+        assert one("SELECT count(*) FROM posts WHERE source_post_id='999'") == 1
+        assert one("SELECT skipped_posts FROM crawl_runs WHERE apify_run_id='fixture-rollback'") == 1
         manual = lambda: checked(client.post("/api/admin/ingest-run", json={"run_id": "fixture-manual"}))
         assert run([item(101), item(105)], manual)["duplicate_posts"] == 1
-        assert one("SELECT count(*) FROM posts") == 5
-        print("PASS webhook and manual ingestion, deduplication and atomic rollback")
+        assert one("SELECT count(*) FROM posts") == 6
+        print("PASS webhook and manual ingestion, deduplication and invalid-item skip")
 
         def post(number):
             return one("SELECT id FROM posts WHERE source_post_id=:n", n=str(number))

@@ -31,21 +31,22 @@ def ingest_run(engine, run_id):
     # Check whether this run has already been imported.
     with engine.connect() as conn:
         existing = conn.execute(text("""
-            SELECT status, total_posts, inserted_posts, duplicate_posts
+            SELECT status, total_posts, inserted_posts, duplicate_posts, skipped_posts
             FROM crawl_runs
             WHERE apify_run_id = :run_id
         """), {"run_id": run_id}).mappings().first()
 
-    if existing and existing["status"] == "INGESTED":
+    if existing and existing["status"] in ("INGESTED", "FAILED"):
         return {
             "run_id": run_id,
-            "status": "ALREADY_INGESTED",
+            "status": "ALREADY_" + existing["status"],
             **{
                 key: existing[key]
                 for key in (
                     "total_posts",
                     "inserted_posts",
                     "duplicate_posts",
+                    "skipped_posts",
                 )
             },
         }
@@ -111,24 +112,28 @@ def ingest_run(engine, run_id):
 
         result = ingest_items(engine, items, conn=conn)
 
+        status = "FAILED" if result["total_posts"] and result["skipped_posts"] == result["total_posts"] else "INGESTED"
         conn.execute(text("""
             UPDATE crawl_runs
-            SET status = 'INGESTED',
+            SET status = :status,
                 total_posts = :total,
                 inserted_posts = :inserted,
                 duplicate_posts = :duplicates,
+                skipped_posts = :skipped,
                 finished_at = NOW()
             WHERE id = :id
         """), {
+            "status": status,
             "total": result["total_posts"],
             "inserted": result["inserted_posts"],
             "duplicates": result["duplicate_posts"],
+            "skipped": result["skipped_posts"],
             "id": claim,
         })
 
     return {
         "run_id": run_id,
         "dataset_id": dataset_id,
-        "status": "INGESTED",
+        "status": status,
         **result,
     }

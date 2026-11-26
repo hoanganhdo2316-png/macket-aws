@@ -113,6 +113,16 @@ def claim_manual_scan(engine, scan_id):
         """), {"scan_id": scan_id}).scalar_one_or_none()
 
 
+def complete_scan_from_ingestion(engine, run_id, succeeded):
+    state = "RUNNING" if succeeded else "FAILED"
+    with engine.begin() as conn:
+        conn.execute(text("""
+            UPDATE collector_scan
+            SET state = :state, updated_at = now(), revision = revision + 1
+            WHERE id = 1 AND state = 'RUNNING' AND apify_run_id = :run_id
+        """), {"state": state, "run_id": run_id})
+
+
 def register_scan_routes(app, engine):
     admin = APIRouter(prefix="/api/scan", dependencies=[Depends(verify_admin)])
     collector = APIRouter(prefix="/api/collector/scan", dependencies=[Depends(verify_collector)])

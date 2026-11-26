@@ -19,6 +19,7 @@ if (
     raise unittest.SkipTest("Scan integration requires the isolated staging project")
 
 import apify_run_ingestion
+import apify_webhook_routes
 import scan_routes
 from main import app, engine
 
@@ -172,6 +173,28 @@ class ScanRoutesTests(unittest.TestCase):
         self.assertIsNone(self.claim())
         self.assertEqual(self.client.post("/api/scan/trigger", headers=ADMIN).status_code, 409)
         self.lambda_mock.invoke.assert_not_called()
+
+    def test_failed_ingestion_marks_only_the_matching_scan_failed(self):
+        scan_id = self.claim()
+        self.assertEqual(self.report(scan_id, "RUNNING", RUN_ID).status_code, 204)
+        with patch.object(apify_webhook_routes, "ingest_run", return_value={
+            "run_id": RUN_ID, "status": "FAILED", "total_posts": 2,
+            "inserted_posts": 0, "duplicate_posts": 0, "skipped_posts": 2,
+        }):
+            response = self.client.post("/api/webhooks/apify", headers=WEBHOOK, json={
+                "eventType": "ACTOR.RUN.SUCCEEDED", "resource": {"id": RUN_ID},
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.status()["status"], "FAILED")
+
+        with patch.object(apify_webhook_routes, "ingest_run", return_value={
+            "run_id": RUN_ID, "status": "ALREADY_FAILED", "total_posts": 2,
+            "inserted_posts": 0, "duplicate_posts": 0, "skipped_posts": 2,
+        }):
+            self.assertEqual(self.client.post("/api/webhooks/apify", headers=WEBHOOK, json={
+                "eventType": "ACTOR.RUN.SUCCEEDED", "resource": {"id": RUN_ID},
+            }).status_code, 200)
+        self.assertEqual(self.status()["status"], "FAILED")
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ CREATE TABLE public."crawl_runs" (
     "total_posts" integer DEFAULT 0 NOT NULL,
     "inserted_posts" integer DEFAULT 0 NOT NULL,
     "duplicate_posts" integer DEFAULT 0 NOT NULL,
+    "skipped_posts" integer DEFAULT 0 NOT NULL,
     "error_message" text,
     "started_at" timestamp with time zone DEFAULT now() NOT NULL,
     "finished_at" timestamp with time zone
@@ -60,6 +61,7 @@ CREATE TABLE public."facebook_groups" (
     "url" text NOT NULL,
     "enabled" boolean DEFAULT true NOT NULL,
     "max_posts" integer,
+    "facebook_group_external_id" character varying(255),
     "created_at" timestamp with time zone DEFAULT now() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
