@@ -131,14 +131,44 @@ The operator approved the first live use of `web-deploy.yml` and `MacketWebRelea
 | Rollback evidence | The preflight copy is `/var/backups/macket-frontend-cd-20261126.8oEkM9uq/compose.yaml`. The release script saved `/opt/macket-canary-011/compose.before-frontend-1795672552230334849.yaml`. The old Frontend digest remained cached. No rollback was triggered. |
 | Window close | `MACKET_CD_ENABLED` was removed and verified absent at 13:06:52 ICT. |
 
-### Proposed automatic Frontend delivery after merge
+### Automatic Frontend delivery after merge
 
-Keep this proposal disabled until explicitly approved. The existing manual `production` workflow remains available for single-image rollback and Backend releases.
+[`frontend-auto.yml`](.github/workflows/frontend-auto.yml) provides the always-reported `Frontend required` PR check. It scans Git with Gitleaks and adds the Frontend build, smoke and Trivy checks if the PR changes release inputs. PRs receive repository read permissions and have no AWS credentials. Main pushes reconcile the current content of `frontend/` and `ci/frontend-smoke.sh` against the latest successful deployment in `frontend-production-auto` or the bootstrap source SHA. This also catches a Frontend change if a later documentation-only push supersedes a queued run. The reconciliation retries inputs that have yet to deploy successfully. It skips when the input fingerprint is already deployed.
 
-1. Protect `main` with PR reviews, required Frontend checks and review ownership for workflow, Dockerfile and SSM changes. Run PR checks without AWS credentials. Trigger the release workflow on `push` to `main` so every merge can reconcile against the last deployed Frontend inputs. Skip when those inputs are unchanged. Recheck against current `main` before sending SSM to stop stale runs from replacing a newer Frontend.
-2. Build Frontend `linux/amd64` once and preserve smoke, Gitleaks, dependency, image secret and High/Critical vulnerability gates. Publish the verified artifact by digest and immutable Git SHA tag with an OIDC session limited to `macket-frontend`. Verify the ECR manifest and fail closed on an unavailable scan or any High/Critical finding. Keep the existing Backend gate and workflow separate.
-3. Use separate `frontend-ecr-auto` and `frontend-production-auto` environments restricted to `main`, without environment reviewers. Proposed AWS roles must trust the exact immutable environment subjects and separate publish from deploy permissions. Give the automatic deploy role only the pinned, proposed `MacketFrontendRelease` document and this EC2 target, plus invocation polling. That document must fix the component to `frontend` and accept only a digest. The shared `MacketWebRelease` accepts Backend as an input and stays on the manual approval path.
-4. Use the verified digest produced in the same run as the sole deploy input. Share the current web deployment concurrency group with the manual workflow and retain the host lock. Keep the last healthy digest and manifest, fail on health, resource or peer drift, and roll back to the cached digest on failure. Record and alert on rollback, retain a manual rollback workflow, and give the automatic channel its own kill switch. No automation role, environment or document has been provisioned.
+The release builds an immutable linux/amd64 artifact, verifies artifact SHA-256 and image ID, and uses `frontend-main-<full Git SHA>`. If the tag already exists, the ECR manifest must match the tested artifact's image configuration digest. The ECR scan must complete with zero High/Critical findings before deploy. The deploy job uses the digest output of that publish job. It shares the `macket-production-web` concurrency group with manual CD. While holding that slot it compares the candidate's input fingerprint with current `main` immediately before sending SSM. The host lock and the installed script's health checks and rollback still apply.
+
+#### GitHub Console setup
+
+1. From the PR version of this workflow, confirm the check **Frontend required** has reported. In **Settings → Rules → Rulesets**, create an active branch ruleset targeting `main`. Require a pull request, one approval, Code Owner review, and the **Frontend required** status check from GitHub Actions. Require the branch to be up to date. Block force pushes and deletions, and leave the bypass list empty. The repository owner is the Code Owner of the workflow, automation policy, deploy scripts and package/build inputs. The PR author and reviewer must be different accounts. Merge the configuration PR only after confirming the rule and status check. [GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+2. In **Settings → Environments**, create `frontend-ecr-auto` and `frontend-production-auto`. For each, add a deployment branch rule for the exact branch `main`. Leave required reviewers and wait timers unset on these two environments. Preserve the existing `production` and `ecr-publish` review rules.
+3. Add these variables at their specified scopes. Keep both enablement switches unset until the AWS setup and PR check are confirmed.
+
+| Scope | Variable | Value |
+|---|---|---|
+| Repository | `MACKET_FRONTEND_BASELINE_SHA` | `467a3f41e51d77cf79d703176a4908affe10ca06`, the source commit of the verified live Frontend at bootstrap |
+| Repository | `MACKET_FRONTEND_AUTO_ENABLED` | `true` to enable automatic reconciliation |
+| `frontend-ecr-auto` | `MACKET_FRONTEND_AUTO_PUBLISH_ROLE_ARN` | `arn:aws:iam::393840684011:role/MacketGitHubFrontendAutoPublishRole` |
+| `frontend-production-auto` | `MACKET_FRONTEND_AUTO_DEPLOY_ROLE_ARN` | `arn:aws:iam::393840684011:role/MacketGitHubFrontendAutoDeployRole` |
+| `frontend-production-auto` | `MACKET_FRONTEND_AUTO_DOCUMENT_VERSION` | `1` for the initial Command document, or the reviewed numeric version as shown in Systems Manager |
+| `frontend-production-auto` | `MACKET_FRONTEND_DEPLOY_ENABLED` | `true` to allow SSM in this environment |
+
+#### AWS Console setup
+
+1. In account `393840684011`, region `ap-southeast-1`, open **Systems Manager → Documents → Create document → Command**. Create `MacketFrontendRelease` using [the YAML](deploy/ssm-frontend-release.yaml) and record its version. The only parameter is `Digest`. The command hardcodes `frontend` and invokes the existing root-owned script. Keep the document account-owned and the production host script at its already verified path.
+2. In **IAM → Roles**, use the existing provider `token.actions.githubusercontent.com` and the two exact trust policies below. Create each role with no IAM path prefix and add its inline permissions policy. The publish role only works on the Frontend repository apart from account-level registry authentication. Deploy can send only the dedicated document to instance `i-0c8a12e28de443f56` and poll invocation status, all in Singapore.
+
+| Role | Trust policy | Permissions policy |
+|---|---|---|
+| `MacketGitHubFrontendAutoPublishRole` | [Publish trust](deploy/iam/frontend-auto-publish-trust.json) | [Publish permissions](deploy/iam/frontend-auto-publish-policy.json) |
+| `MacketGitHubFrontendAutoDeployRole` | [Deploy trust](deploy/iam/frontend-auto-deploy-trust.json) | [Deploy permissions](deploy/iam/frontend-auto-deploy-policy.json) |
+
+3. Confirm ECR `macket-frontend` still has immutable tags and Basic Scan on push. The automatic gate accepts a completed Basic scan. Use IAM Policy Simulator to check that the publish role is denied on Backend and Lambda repository actions and the deploy role is denied for `MacketWebRelease`, `AWS-RunShellScript` and any other instance. `ecr:GetAuthorizationToken` and `ssm:GetCommandInvocation` require wildcard resource scopes with a region condition. The GitHub environments remain restricted to `main`. [ECR IAM actions](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazonelasticcontainerregistry.html) · [SSM IAM actions](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ssm.html)
+
+#### Activation and recovery
+
+- After setup, confirm the deployed Frontend still corresponds to the bootstrap SHA. Then set both switches to `true`. The next merge that changes Frontend inputs follows CI → ECR → SSM without an environment approval. A manual run of **Frontend CI and automatic delivery** on `main` can reconcile pending inputs after an infrastructure failure. A docs-only reconciliation with the current bootstrap inputs skips both publishing and deployment.
+- Emergency stop: clear `MACKET_FRONTEND_AUTO_ENABLED` and set the environment switch `MACKET_FRONTEND_DEPLOY_ENABLED=false`. Disable the automatic workflow and cancel queued runs when immediate containment is needed. The switch is read as a deploy job starts. If a command has already been sent to SSM, follow its invocation and host lock before any intervention. Let the installed script complete its health checks and automatic rollback. A hard interruption or ambiguous state requires the existing manual recovery procedure.
+- The existing `web-deploy.yml` remains the explicitly approved manual rollback workflow. Keep automatic delivery disabled while restoring the prior digest. Resume after a correcting Frontend change merges or after an operator explicitly reconciles production. The automatic baseline tracks successful automatic deliveries. It does not promote a manually rolled-back source fingerprint again without a new release input. Backend stays under its existing security gate and manual release controls.
 
 [GitHub push trigger](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push) · [GitHub OIDC claims](https://docs.github.com/en/actions/reference/security/oidc)
 

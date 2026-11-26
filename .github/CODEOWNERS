@@ -1,0 +1,6 @@
+/.github/ @hoanganhdo2316-png
+/ci/frontend* @hoanganhdo2316-png
+/deploy/ @hoanganhdo2316-png
+/frontend/Dockerfile @hoanganhdo2316-png
+/frontend/package*.json @hoanganhdo2316-png
+/tests/test_frontend_inputs.py @hoanganhdo2316-png
