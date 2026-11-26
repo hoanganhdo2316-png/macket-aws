@@ -1,0 +1,125 @@
+name: Frontend CI and ECR publish trial
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: macket-frontend-publish-trial
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && vars.MACKET_CI_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      archive_sha256: ${{ steps.gate.outputs.archive_sha256 }}
+      image_id: ${{ steps.gate.outputs.image_id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history and checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          scanner=ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          docker run --rm -v "$PWD:/src:ro" -w /src "$scanner" git --redact=100 --log-opts='--all' /src
+          docker run --rm -v "$PWD:/src:ro" -w /src "$scanner" dir --redact=100 /src
+      - name: Build Frontend linux/amd64 and run smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --provenance=false -t macket-frontend:ci frontend
+          bash ci/frontend-smoke.sh
+      - name: Save and scan exact Frontend candidate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/frontend.tar"
+          docker image save --platform linux/amd64 -o "$archive" macket-frontend:ci
+          scanner=aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+          docker run --rm -v "$PWD/frontend:/src:ro" "$scanner" fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 /src
+          docker run --rm -v "$archive:/image.tar:ro" "$scanner" image --input /image.tar --scanners secret --format json --exit-code 1 >/dev/null
+          docker run --rm -v "$archive:/image.tar:ro" "$scanner" image --input /image.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1
+          printf 'archive_sha256=%s\n' "$(sha256sum "$archive" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          printf 'image_id=%s\n' "$(docker image inspect --format '{{.Id}}' macket-frontend:ci)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        id: upload
+        with:
+          name: frontend-publish-trial-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/frontend.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && vars.MACKET_ECR_PUBLISH_ENABLED == 'true'
+    environment: ecr-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+    env:
+      ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
+      IMAGE_ID: ${{ needs.build.outputs.image_id }}
+      ROLE_ARN: ${{ vars.MACKET_ECR_PUBLISH_ROLE_ARN }}
+      REGISTRY: 393840684011.dkr.ecr.ap-southeast-1.amazonaws.com
+      RELEASE_TAG: 0.1.2-publish-test-${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/candidate
+      - name: Verify approved artifact and role
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$ROLE_ARN" = 'arn:aws:iam::393840684011:role/MacketGitHubECRPublishRole'
+          [[ "$ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ && "$IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          archive="$RUNNER_TEMP/candidate/frontend.tar"
+          printf '%s  %s\n' "$ARCHIVE_SHA256" "$archive" | sha256sum --check --strict
+          docker load -i "$archive"
+          test "$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' macket-frontend:ci)" = "$IMAGE_ID linux/amd64"
+      - uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: '393840684011'
+          role-session-name: macket-frontend-trial-${{ github.run_id }}-${{ github.run_attempt }}
+          role-duration-seconds: 900
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[
+            {"Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
+            {"Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage","ecr:BatchGetImage","ecr:DescribeImages"],"Resource":"arn:aws:ecr:ap-southeast-1:393840684011:repository/macket-frontend"}]}
+      - name: Publish and verify immutable Frontend digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository=macket-frontend
+          if existing=$(aws ecr describe-images --repository-name "$repository" --image-ids "imageTag=$RELEASE_TAG" 2>&1); then
+            echo 'Trial tag already exists' >&2
+            exit 1
+          elif [[ "$existing" != *'(ImageNotFoundException)'* ]]; then
+            printf '%s\n' "$existing" >&2
+            exit 1
+          fi
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          trap 'docker logout "$REGISTRY" >/dev/null' EXIT
+          dest="$REGISTRY/$repository:$RELEASE_TAG"
+          docker tag macket-frontend:ci "$dest"
+          docker push --platform linux/amd64 "$dest" | tee "$RUNNER_TEMP/frontend-push.log"
+          pushed=$(awk '$2 == "digest:" { print $3 }' "$RUNNER_TEMP/frontend-push.log")
+          [[ "$pushed" =~ ^sha256:[0-9a-f]{64}$ ]]
+          digest=$(aws ecr describe-images --repository-name "$repository" --image-ids "imageTag=$RELEASE_TAG" --query 'imageDetails[0].imageDigest' --output text)
+          test "$digest" = "$pushed"
+          printf 'Published %s@%s\nTag: %s\nArtifact SHA-256: %s\n' "$REGISTRY/$repository" "$digest" "$RELEASE_TAG" "$ARCHIVE_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
