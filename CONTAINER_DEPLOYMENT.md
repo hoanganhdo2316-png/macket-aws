@@ -7,7 +7,9 @@ The web cutover passed on 2026-11-26. Host Nginx terminates HTTPS for `macket.io
 | ECR repository | Tag | Deployed digest |
 |---|---|---|
 | `macket-backend` | `0.1.1-ec2-parity` | `sha256:a47c1f2649a866abe6b3aac45767bd675ce63eaa755ef1ea86662cb2adbd5fb1` |
-| `macket-frontend` | `0.1.1-ec2-parity` | `sha256:7ca48780b2463e79c3bf63c142e4dd1980754311496eb704dd804cb4708b523f` |
+| `macket-frontend` | `0.1.2-publish-test-467a3f41e51d77cf79d703176a4908affe10ca06` | `sha256:8e2f4ea7b6718fb861e14ba31e856aeff1e9d52b8ce401b1328cd501811f5ec8` |
+
+The Frontend-only CD trial deployed the digest above on 2026-11-26. GitHub Actions run `45764577467` completed successfully and the service passed the 10-minute observation. The Backend container ID and digest stayed the same. The last healthy Frontend digest before this change was `sha256:7ca48780b2463e79c3bf63c142e4dd1980754311496eb704dd804cb4708b523f`. See the trial and rollback details in [CI/CD](CI_CD.md#first-frontend-cd-trial-on-production-ec2).
 
 The cutover rollback files and checksums are under `/var/backups/macket-cutover-20261126`. To roll back the original cutover, start and enable `macket-api.service`, verify port 8000, restore the saved host Nginx site, run `nginx -t`, reload and verify both HTTPS vhosts before stopping the containers. Routine web image rollback restores the previous Compose digest for the affected component and leaves host Nginx and the other component unchanged. In this release the operator confirmed RDS backup/PITR readiness, the available manual snapshot and the S3 route. AWS resources remain outside the web release workflow. See [CI/CD preparation](CI_CD.md).
 

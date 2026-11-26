@@ -88,7 +88,59 @@ The reviewed `deploy/deploy_web.py` is installed at `/opt/macket-deploy/deploy_w
 
 1. Use the manual `frontend-publish-test.yml` workflow from `main`. It builds only Frontend and targets the existing `macket-frontend` repository. The general Web CI change selector remains unchanged. The trial OIDC session limits every repository action to `macket-frontend` and uses the `ecr-publish` environment.
 2. The workflow scans Git history and checkout with Gitleaks and requires Frontend smoke, source dependency scan, image-secret scan and the full High/Critical vulnerability gate. The build job uploads the exact linux/amd64 archive after checks pass. Publish downloads by artifact ID from the same run, verifies archive SHA-256, and checks the loaded image ID and platform. The historical local Frontend PASS remains recorded separately.
-3. For the approved test window, set repository variables `MACKET_CI_ENABLED=true` and `MACKET_ECR_PUBLISH_ENABLED=true` before dispatch. Keep `MACKET_CD_ENABLED` unset. Once the build succeeds, approve only `ecr-publish` for this trial run. Publish uses the immutable tag `0.1.2-publish-test-<full Git SHA>`, refuses an existing tag and compares the push digest with the ECR tag lookup. Record the workflow ID, tag, digest, and ECR scan status and findings. A successful push proves `PutImage` and proves layer uploads only if ECR received new layers. Clear both enablement flags after the approved test window. The test tag is not a production release.
+3. For an approved test window, set repository variables `MACKET_CI_ENABLED=true` and `MACKET_ECR_PUBLISH_ENABLED=true` before dispatch. Keep `MACKET_CD_ENABLED` unset. Once the build succeeds, approve only `ecr-publish` for this trial run. Publish uses the immutable tag `0.1.2-publish-test-<full Git SHA>`, refuses an existing tag and compares the push digest with the ECR tag lookup. A successful push proves `PutImage` and proves layer uploads only if ECR received new layers. Clear both enablement flags after the approved test window.
+
+[Run 45762717750](https://github.com/hoanganhdo2316-png/macket-aws/actions/runs/45762717750) completed successfully after `hoanganhdo2316-png` approved `ecr-publish`. Gitleaks, Frontend linux/amd64 build and smoke, dependency and image security checks all passed. Publish checked artifact ID `15089939038`, archive SHA-256 `ecb372c5a855f5d78e368d2def671f4b036238e2189d5611cfc98d271f3c8252`, and loaded image ID and platform before pushing. The ECR lookup independently matched the digest printed by the job.
+
+| Item | Verified value |
+|---|---|
+| Repository | `macket-frontend`, `ap-southeast-1` |
+| Immutable tag | `0.1.2-publish-test-467a3f41e51d77cf79d703176a4908affe10ca06` |
+| Image digest | `sha256:8e2f4ea7b6718fb861e14ba31e856aeff1e9d52b8ce401b1328cd501811f5ec8` |
+| ECR scan at 12:45:08 ICT, 2026-11-26 | `COMPLETE`. 0 Critical, 0 High, 3 Medium. |
+| Medium findings | `CVE-2026-124317`, `CVE-2026-134703`, `CVE-2026-128241`, all reported against Alpine `expat 2.10.0-r0`. |
+
+Both CI and publish enablement variables were still `true` at the close of the Frontend CD trial. Their states are independent of `MACKET_CD_ENABLED`. Backend remains subject to its existing security gate.
+
+### First Frontend CD trial on production EC2
+
+The operator approved the first live use of `web-deploy.yml` and `MacketWebRelease` in a 45-minute window starting at 12:54 ICT on 2026-11-26. Single-host recreation carries a brief interruption risk for Web and proxied API traffic. The local Docker rollback proof covered image replacement and restoration. This trial verified the production SSM delivery and EC2 pull path. The separate isolated SSM failure test remains deferred.
+
+| Release input or baseline | Value |
+|---|---|
+| Target | `i-0c8a12e28de443f56`, `ap-southeast-1`, Compose project `macket-canary-011` |
+| Workflow input | `component=frontend`, `digest=sha256:8e2f4ea7b6718fb861e14ba31e856aeff1e9d52b8ce401b1328cd501811f5ec8` |
+| SSM document | `MacketWebRelease` version `1` |
+| Rollback Frontend digest | `sha256:7ca48780b2463e79c3bf63c142e4dd1980754311496eb704dd804cb4708b523f` |
+| Backend baseline digest | `sha256:a47c1f2649a866abe6b3aac45767bd675ce63eaa755ef1ea86662cb2adbd5fb1` |
+
+1. **Preflight during the window.** Read-only EC2 inspection found both containers healthy, with zero restarts, no OOM, and `unless-stopped`; both current linux/amd64 images were cached. The host had 351 MiB available RAM, zero cumulative OOM kills and 17 GiB free on Docker's filesystem. The script checksum matched the reviewed copy. Nginx, Docker and SSM Agent were active, and the EC2 role could read the candidate ECR manifest. Recheck current health, at least 200 MiB available RAM, disk, Fleet Manager Online, candidate scan and rollback cache immediately before approval. Record both container IDs, both image refs, manifest checksum and current OOM counter. Once approved, save an exact pre-change copy of the Compose manifest with root-only permissions. Ensure that an operator can carry out the SSH rollback within the same window.
+2. **Dispatch and approve once.** With the window open and approval recorded, set `MACKET_CD_ENABLED=true` only for this trial. Dispatch `web-deploy.yml` from `main` with the inputs above. Confirm the `production` environment, target ID and digest before an independent reviewer approves. Capture the SSM Command ID and invocation outcome. The script pulls by digest with the EC2 role, then recreates only `frontend` with `--no-deps`. Preserve host Nginx, runtime configuration, Backend, RDS, Lambda Collector, Scheduler and AI Worker.
+3. **Observe for 10 minutes after SSM success.** Verify candidate digest, healthy Frontend with zero restarts, exact Backend container ID and digest, and unchanged restart/OOM counters. Check Client and Admin pages and read-only API routing at loopback and both HTTPS vhosts. Check a referenced static asset and observe Nginx 5xx, RAM and CPU. Fail the trial on any peer replacement or instability, repeated 5xx after readiness, failed HTTP/HTTPS checks, either container becoming unhealthy, any new OOM kill, a candidate restart, or RAM below 150 MiB.
+4. **Rollback.** Script failures after the manifest swap trigger restoration of the prior manifest and cached Frontend digest. Verify the original Frontend digest, unchanged Backend ID and recovered HTTPS even if SSM reports failure. If an issue appears after workflow success, use the same approved workflow with the rollback digest and a new environment approval while the window is open. If SSM is unavailable, the command times out, or automatic rollback cannot be confirmed, check the actual SSM invocation and host lock before intervening. Once no release command is active, the approved SSH operator restores the known-good manifest atomically, validates Compose, and runs `docker compose -p macket-canary-011 -f /opt/macket-canary-011/compose.yaml up -d --no-deps --no-build --pull never --wait --wait-timeout 60 frontend`. Verify both digests, Backend ID, restart/OOM counters and HTTPS. Do not change Nginx, start the legacy systemd service or roll back the database for this Frontend trial. [SSM invocation statuses](https://docs.aws.amazon.com/systems-manager/latest/userguide/monitor-commands.html)
+5. **Close.** Record the run, approvals, command ID, timings, final digests, Backend ID and observation results. Clear `MACKET_CD_ENABLED` after closing the window. This trial does not unlock Backend deployment or regular production CD.
+
+**Result: PASS.** [GitHub Actions run 45764577467](https://github.com/hoanganhdo2316-png/macket-aws/actions/runs/45764577467) was initiated by `nnsgenztaynguyen-ux` and approved for `production` by `hoanganhdo2316-png`. SSM command `657ce0d7-073f-4c8c-8e61-bb72155f64e1` returned `Success`; the workflow completed at 12:56:35 ICT. The EC2 log confirms that exactly the Frontend service changed to the approved digest. A comparison with the preflight backup verified that the only Compose change was the Frontend image reference.
+
+| Check | Recorded result |
+|---|---|
+| Frontend container ID | `16c37815398e7e6b5d28bd19fdf63da8b71c743f6c21c578091f3e73ee70058f` |
+| Backend container ID | `059d2d93e644fab4eafb7ee83da594bd3196eb73a9481e303d76001040790a92` throughout preflight and observation |
+| Health and resources | 600 seconds, 21 samples, both containers healthy with zero restarts, zero OOM kills and zero 5xx in the observed Nginx access log. Available RAM was 352 MiB at preflight and at least 337 MiB during observation. |
+| Endpoints | Loopback and both host HTTPS vhosts passed Client, Admin, assets and read-only API checks. Public `macket.io.vn` returned HTTP 200 for Client, Admin and API health, including a CloudFront cache miss for API health. The direct external request to `origin.macket.io.vn` timed out from the audit workstation. Origin TLS and responses were verified on EC2. |
+| Rollback evidence | The preflight copy is `/var/backups/macket-frontend-cd-20261126.8oEkM9uq/compose.yaml`. The release script saved `/opt/macket-canary-011/compose.before-frontend-1795672552230334849.yaml`. The old Frontend digest remained cached. No rollback was triggered. |
+| Window close | `MACKET_CD_ENABLED` was removed and verified absent at 13:06:52 ICT. |
+
+### Proposed automatic Frontend delivery after merge
+
+Keep this proposal disabled until explicitly approved. The existing manual `production` workflow remains available for single-image rollback and Backend releases.
+
+1. Protect `main` with PR reviews, required Frontend checks and review ownership for workflow, Dockerfile and SSM changes. Run PR checks without AWS credentials. Trigger the release workflow on `push` to `main` so every merge can reconcile against the last deployed Frontend inputs. Skip when those inputs are unchanged. Recheck against current `main` before sending SSM to stop stale runs from replacing a newer Frontend.
+2. Build Frontend `linux/amd64` once and preserve smoke, Gitleaks, dependency, image secret and High/Critical vulnerability gates. Publish the verified artifact by digest and immutable Git SHA tag with an OIDC session limited to `macket-frontend`. Verify the ECR manifest and fail closed on an unavailable scan or any High/Critical finding. Keep the existing Backend gate and workflow separate.
+3. Use separate `frontend-ecr-auto` and `frontend-production-auto` environments restricted to `main`, without environment reviewers. Proposed AWS roles must trust the exact immutable environment subjects and separate publish from deploy permissions. Give the automatic deploy role only the pinned, proposed `MacketFrontendRelease` document and this EC2 target, plus invocation polling. That document must fix the component to `frontend` and accept only a digest. The shared `MacketWebRelease` accepts Backend as an input and stays on the manual approval path.
+4. Use the verified digest produced in the same run as the sole deploy input. Share the current web deployment concurrency group with the manual workflow and retain the host lock. Keep the last healthy digest and manifest, fail on health, resource or peer drift, and roll back to the cached digest on failure. Record and alert on rollback, retain a manual rollback workflow, and give the automatic channel its own kill switch. No automation role, environment or document has been provisioned.
+
+[GitHub push trigger](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#push) · [GitHub OIDC claims](https://docs.github.com/en/actions/reference/security/oidc)
 
 ## Backend security gate
 
