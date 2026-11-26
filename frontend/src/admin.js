@@ -6,6 +6,7 @@ import { renderCrawler } from './admin-crawler.js';
 import { renderAuthors } from './admin-authors.js';
 import { renderGroups } from './admin-groups.js';
 import { renderProducts } from './admin-products.js';
+import { renderScanHistory } from './admin-scan-history.js';
 import './admin.css';
 
 const root = document.querySelector('#admin-root');
@@ -17,6 +18,7 @@ const sections = [
   ['user-x', 'Author Skip List'],
   ['clock', 'Scheduler'],
   ['settings', 'Crawler Settings'],
+  ['history', 'Scan History'],
   ['history', 'AI Classification Logs'],
   ['key', 'API Credentials'],
   ['bot', 'AI System Prompt']
@@ -146,6 +148,8 @@ function renderDashboard() {
         renderScheduler(content, api);
       } else if (name === 'Crawler Settings') {
         renderCrawler(content, api);
+      } else if (name === 'Scan History') {
+        renderScanHistory(content, api);
       } else if (name === 'AI Classification Logs') {
         renderClassificationLogs(content, api);
       } else if (name === 'AI System Prompt') {

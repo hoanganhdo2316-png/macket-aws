@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+ROOT=/opt/macket-canary-011
+COMPOSE="$ROOT/compose.yaml"
+ENV_FILE=/home/ubuntu/macket/backend/.env
+PROJECT=macket-canary-011
+MIN_AVAILABLE_KIB=307200
+
+[ -r "$COMPOSE" ] && [ -r "$ENV_FILE" ]
+available=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+if [ "$available" -lt "$MIN_AVAILABLE_KIB" ]; then
+    echo "Macket AI pipeline skipped: less than 300 MiB available" >&2
+    exit 0
+fi
+
+cid=$(docker compose -p "$PROJECT" -f "$COMPOSE" ps -q backend-api)
+[ -n "$cid" ]
+health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$cid")
+[ "$health" = healthy ]
+image=$(docker inspect --format '{{.Config.Image}}' "$cid")
+case "$image" in
+    393840684011.dkr.ecr.ap-southeast-1.amazonaws.com/macket-backend@sha256:*) ;;
+    *) echo "Unexpected backend image" >&2; exit 1 ;;
+esac
+
+exec docker run --rm --network "container:$cid" --memory 192m --cpus 0.50 \
+    --pids-limit 128 --security-opt no-new-privileges:true \
+    --env-file "$ENV_FILE" "$image" python -B ai_pipeline.py

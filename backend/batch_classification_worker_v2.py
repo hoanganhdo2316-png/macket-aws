@@ -61,7 +61,7 @@ def get_tasks(conn, limit):
           AND c.seller_type = 'individual'
           AND c.extraction_status IN ('pending', 'failed')
           AND c.extraction_attempts < 3
-        ORDER BY c.id
+        ORDER BY c.created_at DESC, c.id DESC
         LIMIT :limit
     """), {"limit": limit}).mappings().all()
 
@@ -103,7 +103,7 @@ def get_tasks(conn, limit):
                     OR a.profile_url = p.author_url
                 )
           )
-        ORDER BY p.id
+        ORDER BY p.collected_at DESC, p.id DESC
         LIMIT :limit
     """), {"limit": limit}).mappings().all()
 

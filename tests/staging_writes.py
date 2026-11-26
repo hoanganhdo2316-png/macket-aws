@@ -120,7 +120,16 @@ def main_test():
         assert one("SELECT skipped_posts FROM crawl_runs WHERE apify_run_id='fixture-rollback'") == 1
         manual = lambda: checked(client.post("/api/admin/ingest-run", json={"run_id": "fixture-manual"}))
         assert run([item(101), item(105)], manual)["duplicate_posts"] == 1
-        assert one("SELECT count(*) FROM posts") == 6
+        write("""INSERT INTO collector_scan(id, scan_id, source, state, apify_run_id)
+                 VALUES (1, '00000000-0000-0000-0000-000000000106', 'manual', 'RUNNING', 'fixture-history')""")
+        assert run([item(106)], lambda: webhook("fixture-history"))["inserted_posts"] == 1
+        assert one("SELECT count(*) FROM posts") == 7
+        assert one("SELECT source FROM crawl_runs WHERE apify_run_id='fixture-history'") == "manual"
+        assert one("""SELECT count(*) FROM posts p JOIN crawl_runs r ON r.id=p.crawl_run_id
+                      WHERE r.apify_run_id='fixture-history'""") == 1
+        history = checked(client.get("/api/admin/scan-history"))
+        assert any(row["apify_run_id"] == "fixture-history" and row["linked_posts"] == 1
+                   for row in history["items"])
         print("PASS webhook and manual ingestion, deduplication and invalid-item skip")
 
         def post(number):

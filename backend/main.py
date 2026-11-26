@@ -70,6 +70,9 @@ register_collector_credentials_routes(app, engine)
 from scan_routes import register_scan_routes
 register_scan_routes(app, engine)
 
+from scan_history_routes import register_scan_history_routes
+register_scan_history_routes(app, engine)
+
 
 # AI System Prompt Management
 from ai_prompt_routes import router as ai_prompt_router

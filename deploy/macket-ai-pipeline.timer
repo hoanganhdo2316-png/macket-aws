@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Macket AI pipeline every minute
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=macket-ai-pipeline.service
+
+[Install]
+WantedBy=timers.target

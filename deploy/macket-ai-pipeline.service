@@ -1,0 +1,8 @@
+[Unit]
+Description=Macket bounded AI and media pipeline
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/macket-ai-pipeline.lock /usr/local/sbin/macket-ai-pipeline

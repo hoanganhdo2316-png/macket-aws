@@ -90,18 +90,26 @@ def ingest_run(engine, run_id):
 
     # Posts and crawl history commit or roll back together.
     with engine.begin() as conn:
+        scan = conn.execute(text("""
+            SELECT scan_id, source FROM collector_scan
+            WHERE id = 1 AND apify_run_id = :run_id
+        """), {"run_id": run_id}).mappings().first()
         claim = conn.execute(text("""
             INSERT INTO crawl_runs (
                 apify_run_id,
                 apify_dataset_id,
+                scan_id,
+                source,
                 status
             )
-            VALUES (:run_id, :dataset_id, 'PROCESSING')
+            VALUES (:run_id, :dataset_id, :scan_id, :source, 'PROCESSING')
             ON CONFLICT (apify_run_id) DO NOTHING
             RETURNING id
         """), {
             "run_id": run_id,
             "dataset_id": dataset_id,
+            "scan_id": scan["scan_id"] if scan else None,
+            "source": scan["source"] if scan else None,
         }).scalar_one_or_none()
 
         if claim is None:
@@ -110,7 +118,7 @@ def ingest_run(engine, run_id):
                 "manual reconciliation required"
             )
 
-        result = ingest_items(engine, items, conn=conn)
+        result = ingest_items(engine, items, conn=conn, crawl_run_id=claim)
 
         status = "FAILED" if result["total_posts"] and result["skipped_posts"] == result["total_posts"] else "INGESTED"
         conn.execute(text("""

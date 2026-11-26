@@ -70,7 +70,7 @@ def resolve_group(item, groups_by_external_id, groups_by_name, groups_by_key):
     return group, external_id
 
 
-def ingest_items(engine, items, conn=None):
+def ingest_items(engine, items, conn=None, crawl_run_id=None):
     if not isinstance(items, list):
         raise ValueError("Dataset must be a list")
 
@@ -132,6 +132,7 @@ def ingest_items(engine, items, conn=None):
                 INSERT INTO posts (
                     source,
                     source_post_id,
+                    crawl_run_id,
                     url,
                     content,
                     published_at,
@@ -151,6 +152,7 @@ def ingest_items(engine, items, conn=None):
                 VALUES (
                     :source,
                     :post_id,
+                    :crawl_run_id,
                     :url,
                     :content,
                     :published_at,
@@ -173,6 +175,7 @@ def ingest_items(engine, items, conn=None):
             """), {
                 "source": SOURCE,
                 "post_id": post_id,
+                "crawl_run_id": crawl_run_id,
                 "url": url,
                 "content": item.get("text"),
                 "published_at": published_at,
