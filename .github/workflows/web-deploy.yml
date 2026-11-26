@@ -12,6 +12,14 @@ on:
         description: Approved immutable digest (sha256 followed by 64 hex characters)
         type: string
         required: true
+  workflow_call:
+    inputs:
+      component:
+        type: string
+        required: true
+      digest:
+        type: string
+        required: true
 
 permissions: {}
 
@@ -26,6 +34,7 @@ jobs:
     timeout-minutes: 22
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       id-token: write
     env:
       COMPONENT: ${{ inputs.component }}
@@ -38,6 +47,9 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$COMPONENT" == backend || "$COMPONENT" == frontend ]]
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            test "$COMPONENT" = frontend
+          fi
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$INSTANCE" =~ ^i-[0-9a-f]{17}$ && "$DOC_VERSION" =~ ^[1-9][0-9]*$ ]]
       - uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6
@@ -45,6 +57,20 @@ jobs:
           role-to-assume: ${{ vars.MACKET_CD_ROLE_ARN }}
           aws-region: ap-southeast-1
           allowed-account-ids: '393840684011'
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: github.event_name == 'push'
+        with:
+          persist-credentials: false
+      - name: Reject superseded Frontend inputs
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin refs/heads/main
+          if ! git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- frontend/ ci/frontend-smoke.sh; then
+            echo 'Frontend inputs on main have changed. Use the newer run.' >&2
+            exit 1
+          fi
       - name: Run the approved fixed SSM document
         shell: bash
         run: |

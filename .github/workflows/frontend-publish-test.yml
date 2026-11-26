@@ -2,6 +2,11 @@ name: Frontend CI and ECR publish trial
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'ci/frontend-smoke.sh'
 
 permissions: {}
 
@@ -68,12 +73,14 @@ jobs:
     timeout-minutes: 10
     permissions:
       id-token: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
     env:
       ARCHIVE_SHA256: ${{ needs.build.outputs.archive_sha256 }}
       IMAGE_ID: ${{ needs.build.outputs.image_id }}
       ROLE_ARN: ${{ vars.MACKET_ECR_PUBLISH_ROLE_ARN }}
       REGISTRY: 393840684011.dkr.ecr.ap-southeast-1.amazonaws.com
-      RELEASE_TAG: 0.1.2-publish-test-${{ github.sha }}
+      RELEASE_TAG: ${{ format('{0}-{1}', github.event_name == 'push' && 'frontend-main' || '0.1.2-publish-test', github.sha) }}
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -102,12 +109,13 @@ jobs:
             {"Effect":"Allow","Action":"ecr:GetAuthorizationToken","Resource":"*"},
             {"Effect":"Allow","Action":["ecr:BatchCheckLayerAvailability","ecr:InitiateLayerUpload","ecr:UploadLayerPart","ecr:CompleteLayerUpload","ecr:PutImage","ecr:BatchGetImage","ecr:DescribeImages"],"Resource":"arn:aws:ecr:ap-southeast-1:393840684011:repository/macket-frontend"}]}
       - name: Publish and verify immutable Frontend digest
+        id: publish
         shell: bash
         run: |
           set -euo pipefail
           repository=macket-frontend
           if existing=$(aws ecr describe-images --repository-name "$repository" --image-ids "imageTag=$RELEASE_TAG" 2>&1); then
-            echo 'Trial tag already exists' >&2
+            echo 'Release tag already exists' >&2
             exit 1
           elif [[ "$existing" != *'(ImageNotFoundException)'* ]]; then
             printf '%s\n' "$existing" >&2
@@ -122,4 +130,16 @@ jobs:
           [[ "$pushed" =~ ^sha256:[0-9a-f]{64}$ ]]
           digest=$(aws ecr describe-images --repository-name "$repository" --image-ids "imageTag=$RELEASE_TAG" --query 'imageDetails[0].imageDigest' --output text)
           test "$digest" = "$pushed"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
           printf 'Published %s@%s\nTag: %s\nArtifact SHA-256: %s\n' "$REGISTRY/$repository" "$digest" "$RELEASE_TAG" "$ARCHIVE_SHA256" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: publish
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/web-deploy.yml
+    with:
+      component: frontend
+      digest: ${{ needs.publish.outputs.digest }}
