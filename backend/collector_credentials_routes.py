@@ -13,40 +13,32 @@ router = APIRouter(
 )
 
 
+def load_apify_token(engine):
+    encryption_key = os.getenv("CREDENTIALS_ENCRYPTION_KEY")
+    if not encryption_key:
+        raise HTTPException(503, "Credentials encryption unavailable")
+
+    with engine.connect() as conn:
+        encrypted = conn.execute(text("""
+            SELECT encrypted_token
+            FROM api_credentials
+            WHERE service = 'apify'
+        """)).scalar_one_or_none()
+
+    if not encrypted:
+        raise HTTPException(503, "Apify Token not configured")
+
+    try:
+        return Fernet(encryption_key.encode()).decrypt(encrypted.encode()).decode()
+    except (InvalidToken, ValueError) as exc:
+        raise HTTPException(503, "Cannot decrypt Apify Token") from exc
+
+
 def register_collector_credentials_routes(app, engine):
 
     @router.get("/apify-token")
     def get_apify_token(response: Response):
         response.headers["Cache-Control"] = "no-store"
-
-        encryption_key = os.getenv("CREDENTIALS_ENCRYPTION_KEY")
-
-        if not encryption_key:
-            raise HTTPException(
-                503, "Credentials encryption unavailable"
-            )
-
-        with engine.connect() as conn:
-            encrypted = conn.execute(text("""
-                SELECT encrypted_token
-                FROM api_credentials
-                WHERE service = 'apify'
-            """)).scalar_one_or_none()
-
-        if not encrypted:
-            raise HTTPException(
-                503, "Apify Token not configured"
-            )
-
-        try:
-            token = Fernet(
-                encryption_key.encode()
-            ).decrypt(encrypted.encode()).decode()
-        except (InvalidToken, ValueError):
-            raise HTTPException(
-                503, "Cannot decrypt Apify Token"
-            )
-
-        return {"token": token}
+        return {"token": load_apify_token(engine)}
 
     app.include_router(router)

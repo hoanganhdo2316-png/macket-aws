@@ -98,3 +98,15 @@ Hai thư mục `data` và `logs` được bind mount nên tồn tại khi contai
 ## Lưu ý
 
 Actor có thể trả kết quả thiếu trường hoặc không đủ 3 bài/Group. Bài thiếu thời gian hoặc ID được bỏ qua để tránh đưa dữ liệu không xác minh được vào Macket; chi tiết ở summary. Không cam kết crawl đủ 30 bài trong mọi lần chạy. Quyền thu thập và tái sử dụng nội dung phải tuân thủ điều khoản nền tảng và quyền riêng tư của người đăng.
+
+## Quét ngay trong Admin
+
+Admin → **Crawler Settings** dùng `POST /api/scan/trigger` và `GET /api/scan/status` với `X-Admin-Token`. FastAPI gửi `InvocationType=Event` tới Lambda `macket-apify-trigger` ở Singapore. Lambda dùng cùng bước nhận quyền chạy cho cả yêu cầu thủ công và Scheduler. Bước này dùng bảng một dòng `collector_scan` trên PostgreSQL hiện có. Lambda kiểm tra các lượt Apify còn hoạt động trước khi khởi động Actor. Phần đọc trạng thái dùng ID run Apify và bảng `crawl_runs` để phân biệt đã quét xong với đã nhập dữ liệu.
+
+Thứ tự phát hành cần phê duyệt riêng
+
+1. Áp dụng [migration](../backend/migrations/001_collector_scan.sql) trong một transaction rồi cập nhật Backend. Giữ `MACKET_MANUAL_SCAN_ENABLED` chưa đặt trong lúc chuyển đổi.
+2. Cập nhật image của Lambda hiện có để cả hai nguồn cùng nhận quyền chạy qua Backend. Giữ nguyên cấu hình Scheduler và webhook. Chờ mọi invocation dùng image cũ kết thúc trước khi bật quét thủ công.
+3. Đặt `MACKET_MANUAL_SCAN_ENABLED=true` trong runtime env của Backend. Kiểm tra Admin và trạng thái trước khi gửi lượt quét đầu tiên.
+
+Yêu cầu thủ công đang chờ Lambda hết hạn sau 5 phút. Lambda đến muộn không thể nhận lại yêu cầu đã hết hạn. Khi kết quả khởi động Apify chưa xác minh được, pipeline giữ trạng thái `UNKNOWN` và khóa cả hai đường khởi động lượt mới. Người vận hành cần đối chiếu log Lambda và run của Actor trước khi gỡ khóa. Khi đã xác nhận invocation kết thúc, cập nhật chính dòng có `scan_id` tương ứng, tăng `revision` và cập nhật `updated_at`. Nếu tìm được run đã khởi động, lưu `apify_run_id` và chuyển trạng thái sang `RUNNING` để tiếp tục theo dõi. Chỉ chuyển sang `FAILED` khi đã xác nhận Apify không nhận lượt khởi động đó.

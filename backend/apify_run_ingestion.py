@@ -8,8 +8,9 @@ from apify_dataset import fetch_dataset
 from apify_ingestion import ingest_items
 
 
-def apify_get(path):
-    token = os.environ["APIFY_TOKEN"]
+def apify_get(path, *, token=None, timeout=30):
+    if token is None:
+        token = os.environ["APIFY_TOKEN"]
 
     request = Request(
         "https://api.apify.com/v2/" + path,
@@ -19,7 +20,7 @@ def apify_get(path):
         },
     )
 
-    with urlopen(request, timeout=30) as response:
+    with urlopen(request, timeout=timeout) as response:
         return json.load(response)["data"]
 
 
