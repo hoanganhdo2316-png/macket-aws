@@ -1,3 +1,71 @@
+const scanLabels = {
+  IDLE: 'Chưa có lượt quét được ghi nhận.',
+  QUEUED: 'Đã gửi yêu cầu, đang chờ Lambda.',
+  STARTING: 'Collector đang chuẩn bị.',
+  READY: 'Apify đang chờ tài nguyên.',
+  RUNNING: 'Apify đang quét Facebook.',
+  ABORTING: 'Apify đang dừng lượt quét.',
+  'TIMING-OUT': 'Apify đang kết thúc lượt quá thời gian.',
+  AWAITING_INGESTION: 'Apify đã quét xong, đang chờ nhập dữ liệu.',
+  INGESTED: 'Đã nhập dữ liệu từ lượt quét.',
+  FAILED: 'Lượt quét không thành công.',
+  ABORTED: 'Lượt quét đã bị hủy.',
+  'TIMED-OUT': 'Lượt quét đã quá thời gian.',
+  EXPIRED: 'Yêu cầu hết hạn trước khi Collector nhận.',
+  UNKNOWN: 'Chưa xác minh được lượt quét. Tạm khóa các lượt quét mới.',
+  STATUS_UNAVAILABLE: 'Tạm thời không đọc được trạng thái Apify.'
+};
+
+function bindScan(panel, api) {
+  const trigger = panel.querySelector('#trigger-facebook-scan');
+  const status = panel.querySelector('#facebook-scan-status');
+  const message = panel.querySelector('#facebook-scan-message');
+  let timer;
+  let request = 0;
+
+  async function refresh() {
+    if (!panel.isConnected) return;
+    const current = ++request;
+    let delay = 15000;
+
+    try {
+      const scan = await api('/api/scan/status');
+      if (!panel.isConnected || current !== request) return;
+      trigger.disabled = !scan.can_trigger;
+      const label = scanLabels[scan.status] || 'Chưa đọc được trạng thái lượt quét.';
+      const source = scan.source === 'scheduler' ? 'Lịch tự động' : 'Thủ công';
+      const text = (scan.enabled ? '' : 'Quét thủ công chưa được bật. ')
+        + label + (scan.source ? ` Yêu cầu: ${source}.` : '');
+      if (status.textContent !== text) status.textContent = text;
+      if (['QUEUED', 'STARTING', 'READY', 'RUNNING', 'AWAITING_INGESTION'].includes(scan.status)) {
+        delay = 5000;
+      }
+    } catch {
+      if (!panel.isConnected || current !== request) return;
+      trigger.disabled = true;
+      status.textContent = 'Không thể tải trạng thái quét. Đang thử lại.';
+    }
+
+    timer = setTimeout(refresh, delay);
+  }
+
+  trigger.onclick = async () => {
+    clearTimeout(timer);
+    request++;
+    trigger.disabled = true;
+    message.textContent = 'Đang gửi yêu cầu...';
+    try {
+      await api('/api/scan/trigger', { method: 'POST' });
+      message.textContent = '';
+    } catch (error) {
+      message.textContent = error.message;
+    }
+    await refresh();
+  };
+
+  refresh();
+}
+
 export async function renderCrawler(container, api) {
   container.innerHTML = '<div class="panel">Đang tải cấu hình crawler...</div>';
 
@@ -11,6 +79,15 @@ export async function renderCrawler(container, api) {
           <p>Điều chỉnh cấu hình thu thập dữ liệu từ Facebook.</p>
         </div>
       </div>
+
+      <section class="panel" id="facebook-scan">
+        <h2>Quét Facebook</h2>
+        <p id="facebook-scan-status" role="status">Đang đọc trạng thái quét...</p>
+        <button class="primary-btn" type="button" id="trigger-facebook-scan" disabled>
+          Quét ngay
+        </button>
+        <p id="facebook-scan-message" role="status"></p>
+      </section>
 
       <form id="crawler-form" class="group-editor">
         <label>
@@ -58,6 +135,7 @@ export async function renderCrawler(container, api) {
 
     const form = container.querySelector('#crawler-form');
     const message = container.querySelector('#crawler-message');
+    bindScan(container.querySelector('#facebook-scan'), api);
 
     function populate(data) {
       form.elements.max_posts_per_group.value =

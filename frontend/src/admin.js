@@ -27,7 +27,7 @@ let adminToken = null;
 async function api(path, options = {}) {
   if (!adminToken) throw new Error('Chưa đăng nhập');
 
-  const response = await fetch(`/api/admin${path}`, {
+  const response = await fetch(path.startsWith('/api/') ? path : `/api/admin${path}`, {
     ...options,
     headers: {
       'X-Admin-Token': adminToken,
