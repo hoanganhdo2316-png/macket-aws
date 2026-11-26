@@ -1,5 +1,16 @@
 # Macket container deployment
 
+## Current production
+
+The web cutover passed on 2026-11-26. Host Nginx terminates HTTPS for `macket.io.vn` and `origin.macket.io.vn`; both forward web and `/api/` traffic to `127.0.0.1:8080`. The live Compose project is `macket-canary-011` at `/opt/macket-canary-011/compose.yaml`, with only `backend-api` and `frontend`. Both have `restart: unless-stopped`. The API uses RDS PostgreSQL through TLS in read-write mode. Runtime variables are read from the existing protected file outside the image. The legacy systemd API is inactive/disabled and its unit, source, venv and static release are retained.
+
+| ECR repository | Tag | Deployed digest |
+|---|---|---|
+| `macket-backend` | `0.1.1-ec2-parity` | `sha256:a47c1f2649a866abe6b3aac45767bd675ce63eaa755ef1ea86662cb2adbd5fb1` |
+| `macket-frontend` | `0.1.1-ec2-parity` | `sha256:7ca48780b2463e79c3bf63c142e4dd1980754311496eb704dd804cb4708b523f` |
+
+The cutover rollback files and checksums are under `/var/backups/macket-cutover-20261126`. To roll back the original cutover, start and enable `macket-api.service`, verify port 8000, restore the saved host Nginx site, run `nginx -t`, reload and verify both HTTPS vhosts before stopping the containers. Routine web image rollback restores the previous Compose digest for the affected component and leaves host Nginx and the other component unchanged. In this release the operator confirmed RDS backup/PITR readiness, the available manual snapshot and the S3 route. AWS resources remain outside the web release workflow. See [CI/CD preparation](CI_CD.md).
+
 ## Local candidate and production prerequisites
 
 The Compose project runs Uvicorn and Nginx on a private bridge between services. Only Nginx is published, on host loopback. Keep the existing EC2 Nginx in front for HTTPS. Route the existing virtual host to `127.0.0.1:8080` (or the approved free port) and preserve the URI, host, HTTPS scheme, and client forwarding headers. Confirm existing limits, timeouts, access rules and webhook behavior before switching. The bridge requires outbound access for the API and jobs. RDS, S3, EventBridge Scheduler and Lambda remain external.
@@ -54,9 +65,9 @@ done
 
 Use a new version/SHA tag and record the digest. Verify push principal permissions (`GetAuthorizationToken`, `BatchCheckLayerAvailability`, `InitiateLayerUpload`, `UploadLayerPart`, `CompleteLayerUpload`, `PutImage`, `BatchGetImage`) and EC2 pull permissions (`GetAuthorizationToken`, `BatchCheckLayerAvailability`, `GetDownloadUrlForLayer`, `BatchGetImage`). Read access to ECR alone does not establish these permissions. A Lambda release needs its own approval and a compatible single-architecture image, with the existing digest kept for rollback.
 
-## EC2 cutover and rollback (requires separate approval)
+## Original EC2 cutover procedure (historical)
 
-The currently tested deployment uses project `macket-canary-011`, `/opt/macket-canary-011/compose.yaml`, TCP `127.0.0.1:8080` and both approved `0.1.1-ec2-parity` digests. The source-controlled image-only equivalent is `deploy/compose.web.yaml`. Run `bash deploy/verify-web.sh` on EC2 to check the current deployment without altering it.
+The initial canary used project `macket-canary-011`, `/opt/macket-canary-011/compose.yaml`, TCP `127.0.0.1:8080` and both approved `0.1.1-ec2-parity` digests. The source-controlled image-only equivalent is `deploy/compose.web.yaml`. The checks against the old systemd service below are part of the historical cutover, not prerequisites for routine image updates.
 
 1. Close the release gates. Confirm the effective subnet route table has an active `com.amazonaws.ap-southeast-1.s3` prefix-list route to the intended Gateway Endpoint, obtain five-minute CPU credit balance/usage around representative traffic, review remaining CVEs, and verify normal write contracts in isolated staging. Record the old API/Nginx PIDs, OOM counter, available RAM, current port bindings, ECR digests, host HTTPS results and the production latency baseline. Keep the existing static release, venv and `macket-api.service` online.
 2. When authorized, prepare an operator-only release manifest using `deploy/compose.web.yaml` with verified `@sha256:` references and the existing external runtime env file. Preserve the current read-only manifest. Set `MACKET_DB_READ_ONLY=off` and `MACKET_WEB_RESTART_POLICY=unless-stopped` for the release, then validate with `docker compose config --quiet` without printing resolved environment. Replace the canary in the **same** project/port using `docker compose up -d --no-build --pull never --wait backend-api frontend`. Check the database setting via SELECT and run loopback smoke checks. Leave production traffic on the systemd stack during this step. Avoid running three API instances simultaneously on the t3.micro.
@@ -82,7 +93,7 @@ proxy_set_header X-Forwarded-Proto $scheme;
 
 ### Restart behavior
 
-EC2 `docker.service` and `containerd.service` are enabled. The active read-only canary currently uses `restart: no`. The release Compose manifest supports `unless-stopped` for both web services; it was validated locally with the read-write configuration, and Docker Engine restarted a disposable process that exited after 12 seconds using that policy. During a reboot, eligible existing containers restart when Docker starts. Compose `depends_on` gates `compose up`; Docker Engine does not replay Compose startup order on daemon restart. Allow a brief readiness window while the API becomes healthy and keep the old Nginx config ready for restoration. If the project has been manually stopped or removed, use the approved `compose up` command. No production reboot or daemon restart was performed.
+EC2 `docker.service` and `containerd.service` are enabled. The initial read-only canary used `restart: no`; production uses `unless-stopped` for both services. Docker Engine restarted a disposable process that exited after 12 seconds using that policy. During a reboot, eligible existing containers restart when Docker starts. Compose `depends_on` gates `compose up`; Docker Engine does not replay Compose startup order on daemon restart. Allow a brief readiness window while the API becomes healthy and keep the old Nginx config ready for restoration. If the project has been manually stopped or removed, use the approved `compose up` command. No production reboot or daemon restart was performed.
 
 ## Pre-cutover load check
 

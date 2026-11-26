@@ -1,0 +1,141 @@
+name: Web CI and ECR candidate publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Full ancestor SHA for change selection (default is the previous commit)
+        type: string
+      version:
+        description: Release version used for the candidate tag
+        type: string
+        default: 0.1.2
+      publish:
+        description: Request an ECR publish after checks and environment approval
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: vars.MACKET_CI_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    outputs:
+      components: ${{ steps.plan.outputs.components }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: plan
+        env:
+          INPUT_BASE: ${{ inputs.base_sha }}
+          INPUT_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][a-z0-9]+)*$ && ${#INPUT_VERSION} -le 50 ]]
+          base="${INPUT_BASE:-$(git rev-parse HEAD^)}"
+          [[ "$base" =~ ^[a-f0-9]{40}$ ]]
+          git merge-base --is-ancestor "$base" "$GITHUB_SHA"
+          printf 'components=%s\ntag=%s-%s\n' "$(python3 ci/select_components.py "$base" "$GITHUB_SHA")" "$INPUT_VERSION" "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Scan Git history and checkout
+        run: |
+          scanner=ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          docker run --rm -v "$PWD:/src:ro" -w /src "$scanner" git --redact=100 --log-opts='--all' /src
+          docker run --rm -v "$PWD:/src:ro" -w /src "$scanner" dir --redact=100 /src
+      - name: Test release script and change selection
+        run: python3 -m unittest discover -s tests -p 'test_ci_*.py'
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.components != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.components) }}
+    env:
+      COMPONENT: ${{ matrix.component }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build selected Linux image
+        run: docker build --platform linux/amd64 --provenance=false -t "macket-$COMPONENT:ci" "$COMPONENT"
+      - name: Backend syntax, dependency and isolated writes
+        if: matrix.component == 'backend'
+        env:
+          MACKET_STAGING_BACKEND_IMAGE: macket-backend:ci
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          for root in ('backend', 'ci', 'deploy', 'tests'):
+              for path in Path(root).rglob('*.py'):
+                  compile(path.read_bytes(), str(path), 'exec')
+          PY
+          docker run --rm --network none macket-backend:ci python -m pip check
+          stage=(docker compose -p macket-ci-writes -f tests/compose.writes.yaml)
+          trap '"${stage[@]}" down' EXIT
+          docker pull postgres:18.3-bookworm
+          "${stage[@]}" up -d --no-build --pull never --wait staging-db backend-api
+          "${stage[@]}" exec -T -e MACKET_STAGING_HTTP_TARGET=http://127.0.0.1:8000 backend-api python -B - < tests/staging_writes.py
+      - name: Frontend assets and reverse-proxy smoke
+        if: matrix.component == 'frontend'
+        run: bash ci/frontend-smoke.sh
+      - name: Save and scan exact candidate
+        run: |
+          set -euo pipefail
+          docker image save --platform linux/amd64 -o "$RUNNER_TEMP/$COMPONENT.tar" "macket-$COMPONENT:ci"
+          scanner=aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+          docker run --rm -v "$PWD/$COMPONENT:/src:ro" "$scanner" fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 /src
+          docker run --rm -v "$RUNNER_TEMP/$COMPONENT.tar:/image.tar:ro" "$scanner" image --input /image.tar --scanners secret --format json --exit-code 1 >/dev/null
+          docker run --rm -v "$RUNNER_TEMP/$COMPONENT.tar:/image.tar:ro" "$scanner" image --input /image.tar --scanners vuln --severity HIGH,CRITICAL --exit-code 1
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: inputs.publish
+        with:
+          name: image-${{ matrix.component }}
+          path: ${{ runner.temp }}/${{ matrix.component }}.tar
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: [plan, build]
+    if: inputs.publish && vars.MACKET_ECR_PUBLISH_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    environment: ecr-publish
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.components) }}
+    env:
+      COMPONENT: ${{ matrix.component }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      REGISTRY: 393840684011.dkr.ecr.ap-southeast-1.amazonaws.com
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: image-${{ matrix.component }}
+          path: ${{ runner.temp }}/candidate
+      - uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6
+        with:
+          role-to-assume: ${{ vars.MACKET_ECR_PUBLISH_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: '393840684011'
+      - name: Push immutable version and SHA tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load -i "$RUNNER_TEMP/candidate/$COMPONENT.tar"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          trap 'docker logout "$REGISTRY" >/dev/null' EXIT
+          dest="$REGISTRY/macket-$COMPONENT:$TAG"
+          docker tag "macket-$COMPONENT:ci" "$dest"
+          docker push "$dest"
+          aws ecr describe-images --repository-name "macket-$COMPONENT" --image-ids "imageTag=$TAG" --query 'imageDetails[0].imageDigest' --output text

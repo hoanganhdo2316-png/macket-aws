@@ -6,8 +6,10 @@ project=macket-canary-011
 manifest=/opt/macket-canary-011/compose.yaml
 compose=(sudo -n docker compose -p "$project" -f "$manifest")
 
-systemctl is-active --quiet macket-api
 systemctl is-active --quiet nginx
+if [[ "${1:-}" == '--legacy' ]]; then
+  systemctl is-active --quiet macket-api
+fi
 awk '/^MemAvailable:/ { print "MemAvailableKiB=" $2; if ($2 < 150 * 1024) exit 1 }' /proc/meminfo
 grep '^oom_kill ' /proc/vmstat
 

@@ -66,7 +66,9 @@ def main_test():
     admin = {"X-Admin-Token": os.environ["ADMIN_API_TOKEN"]}
     hook = {"X-Webhook-Token": os.environ["APIFY_WEBHOOK_TOKEN"]}
     group = {"name": "Staging Fixture", "url": "https://www.facebook.com/groups/stagingfixture/"}
-    req = Request("http://frontend/api/admin/groups", json.dumps(group).encode(),
+    target = os.environ.get("MACKET_STAGING_HTTP_TARGET", "http://frontend")
+    assert target in {"http://frontend", "http://127.0.0.1:8000"}
+    req = Request(target + "/api/admin/groups", json.dumps(group).encode(),
                   {**admin, "Content-Type": "application/json"})
     with urlopen(req, timeout=8) as response:
         assert response.status == 201

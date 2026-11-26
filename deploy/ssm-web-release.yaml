@@ -1,0 +1,20 @@
+# Template only. Register a fixed version after separate AWS approval.
+schemaVersion: '2.2'
+description: Release exactly one digest-pinned Macket web component.
+parameters:
+  Component:
+    type: String
+    allowedValues: [backend, frontend]
+    interpolationType: ENV_VAR
+  Digest:
+    type: String
+    allowedPattern: '^sha256:[a-f0-9]{64}$'
+    interpolationType: ENV_VAR
+mainSteps:
+  - action: aws:runShellScript
+    name: releaseWebComponent
+    inputs:
+      timeoutSeconds: '900'
+      runCommand:
+        - 'set -eu'
+        - 'exec /usr/bin/python3 /opt/macket-deploy/deploy_web.py "$SSM_Component" "$SSM_Digest"'
